@@ -1,8 +1,7 @@
-#GET /
-curl 127.0.0.1:3000
+#!/bin/bash
 
 #Create user
 curl -X POST \
 -H "Content-Type: application/json" \
--d @curl/json/create_user.json \
+-d @json/create_user.json \
 127.0.0.1:3000/user/create

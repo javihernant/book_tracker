@@ -1,45 +1,56 @@
 use axum::{
     routing::{get, post},
-    http::StatusCode,
-    Json, Router,
+    Router,
 };
-use serde::{Deserialize, Serialize};
+use dotenvy::dotenv;
+
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use std::net::SocketAddr;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use book_tracker::controllers::user::create_user;
+
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations/");
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    dotenv().ok();
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("{}=debug", env!("CARGO_CRATE_NAME")).into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    let db_url = std::env::var("DATABASE_URL").unwrap();
+
+    // set up connection pool
+    let manager = deadpool_diesel::postgres::Manager::new(db_url, deadpool_diesel::Runtime::Tokio1);
+    let pool = deadpool_diesel::postgres::Pool::builder(manager)
+        .build()
+        .unwrap();
+
+    // run the migrations on server startup
+    {
+        let conn = pool.get().await.unwrap();
+        conn.interact(|conn| conn.run_pending_migrations(MIGRATIONS).map(|_| ()))
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     let app = Router::new()
         .route("/", get(root))
-        .route("/users", post(create_user));
+        .route("/user/create", post(create_user))
+        .with_state(pool);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    tracing::debug!("listening on {addr}");
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
 async fn root() -> &'static str {
     "Hello, World!"
-}
-
-async fn create_user(
-    Json(payload): Json<CreateUser>,
-) -> (StatusCode, Json<User>) {
-    let user = User {
-        id: 1337,
-        username: payload.username,
-    };
-    (StatusCode::CREATED, Json(user))
-}
-
-// the input to our `create_user` handler
-#[derive(Deserialize)]
-struct CreateUser {
-    username: String,
-}
-
-// the output to our `create_user` handler
-#[derive(Serialize)]
-struct User {
-    id: u64,
-    username: String,
 }
